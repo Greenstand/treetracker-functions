@@ -83,8 +83,6 @@ kubectl rabbitmq manage rabbitmq-cluster
 
 Then, navigate to [https://localhost:15672](https://localhost:15672/) and login with the credentials above.
 
-## Create Queue
-
 
 ### Install cert-manager
 
