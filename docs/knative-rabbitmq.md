@@ -362,7 +362,9 @@ kubectl get ksvc
 
 you should see the hello service just created
 
-## Install kn event plugin
+## Testing function
+
+### Install kn event plugin
 
 https://github.com/knative-extensions/kn-plugin-event
 
@@ -377,4 +379,16 @@ kn event send \
   --to Broker:eventing.knative.dev/v1:broker
 ```
 
-You should see our knative has created the pod to handle the trigger from event
+You should see our knative has created the pod to handle the trigger from event.
+
+To test if function is working, run
+
+```sh
+k get ksvc
+```
+
+and then
+
+```sh
+curl http://<ksvc url>
+```
