@@ -115,8 +115,11 @@ kubectl apply -f https://github.com/knative/serving/releases/download/knative-v1
 kubectl apply -f https://github.com/knative/serving/releases/download/knative-v1.11.0/serving-core.yaml
 ```
 
-## Install network (kourier)
+## Install network
 
+- kourier
+- istio
+### kourier
 ```
 curl -Lo kourier.yaml https://github.com/knative/net-kourier/releases/download/knative-v1.0.0/kourier.yaml
 ```
@@ -158,6 +161,48 @@ kubectl apply -f https://github.com/knative/serving/releases/download/knative-v1
 
 ```sh
 kubectl patch configmap/config-domain \ --namespace knative-serving \ --type merge \ --patch '{"data":{"127.0.0.1.sslip.io":""}}'
+```
+
+### Istio
+
+```sh
+curl -Lo istio.yaml https://github.com/knative/net-istio/releases/download/knative-v1.11.0/istio.yaml
+```
+
+modify `istio.yaml` to change the loadbalancer to nodeport at line 9922
+
+```yaml
+spec:
+  type: NodePort
+  selector:
+    app: istio-ingressgateway
+    istio: ingressgateway
+  ports:
+    - name: status-port
+      port: 15021
+      protocol: TCP
+      targetPort: 15021
+    - name: http2
+      port: 80
+      protocol: TCP
+      targetPort: 8080
+      nodePort: 31080
+    - name: https
+      port: 443
+      protocol: TCP
+      targetPort: 8443
+      nodePort: 31443
+```
+
+```sh
+kubectl apply -f https://github.com/knative/net-istio/releases/download/knative-v1.11.0/net-istio.yaml
+```
+
+```sh
+kubectl patch configmap/config-domain \
+  --namespace knative-serving \
+  --type merge \
+  --patch '{"data":{"127.0.0.1.sslip.io":""}}'
 ```
 
 ## Knative eventing
