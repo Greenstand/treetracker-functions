@@ -1,10 +1,10 @@
 from setuptools import setup
 
 setup(
-    name='python_functions',
+    name='functions',
     version='1.0',
     description='Functions to be used in treetracker DAG',
-    packages=['python_functions'],
-    package_dir={'python_functions':'python/python_functions'},
+    packages=['functions'],
+    package_dir={'functions': 'python/functions'},
     scripts=['python/scripts/ci.sh'],
 )
