@@ -1,9 +1,5 @@
-import sys
 import unittest
-
-from python.python_functions import refresh_view
-
-print(sys.path)
+from python.functions import refresh_view
 
 
 class TestStringMethods(unittest.TestCase):
