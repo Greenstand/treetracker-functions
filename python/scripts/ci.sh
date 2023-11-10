@@ -5,7 +5,7 @@
 set -e 
 
 # Install dependencies.
-pip install -r requirements.txt
+pip3 install -r ../requirements.txt
 
 # Run tests.
 python3 -m unittest discover -p "*_test.py" -v
