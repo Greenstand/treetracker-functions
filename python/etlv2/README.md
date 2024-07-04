@@ -32,7 +32,7 @@ DEST_DB_PASSWORD=mypassword
 
 ## Update config.properties file
 
-### Parsing the config file makes use of configparser, so the square brackets such as [job] represents sections and should not be deleted. In case you are commenting a part of a key/value pair, makes ure to leave a space before. e,g: key=1,23 #456
+### Parsing the config file makes use of configparser, so the square brackets such as [job] represents sections and should not be deleted. In case you are commenting a part of a key/value pair, makes sure to leave a space before. e,g: key=1,23 #456
 
 ```
 #section name job - job configs

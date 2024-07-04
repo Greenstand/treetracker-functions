@@ -23,7 +23,7 @@ dest_db_user = os.environ.get("DEST_DB_USER")
 dest_db_password = os.environ.get("DEST_DB_PASSWORD")
 
 # Database connection details for dbone
-dbone_config = {
+src_db_config = {
     "host": src_db_host,
     "port": src_db_port,
     "dbname": src_db_name,
@@ -32,7 +32,7 @@ dbone_config = {
 }
 
 # Database connection details for dbtwo
-dbtwo_config = {
+dst_db_config = {
     "host": dest_db_host,
     "port": dest_db_port,
     "dbname": dest_db_name,
@@ -95,7 +95,7 @@ def generate_update_queries(df, table_name, identifier_column="id"):
         query_prefix = f"UPDATE {table_name} SET "
 
         # Get the column names
-        columns = df.columns.tolist()
+        columns = df.columns.tolistupdate_queries()
         update_queries = [] 
 
         # Iterate over each row in the dataframe
@@ -207,28 +207,28 @@ def process_updated_records(db_config, df_dbone, df_dbtwo, table_name, columns):
 def process_data(parsed_query, columns):
     try:
         # Fetch a batch of records from dbone
-        with psycopg2.connect(**dbone_config) as conn1:
-            with conn1.cursor() as cursor1:
-                cursor1.execute(parsed_query)
-                records_dbone = cursor1.fetchall()
+        with psycopg2.connect(**src_db_config) as src_conn:
+            with src_conn.cursor() as src_cursor:
+                src_cursor.execute(parsed_query)
+                records_src_db = src_cursor.fetchall()
 
-        with psycopg2.connect(**dbtwo_config) as conn2:
-            with conn2.cursor() as cursor2:
-                cursor2.execute(parsed_query)
-                records_dbtwo = cursor2.fetchall()
+        with psycopg2.connect(**dst_db_config) as dest_conn:
+            with dest_conn.cursor() as dest_cursor:
+                dest_cursor.execute(parsed_query)
+                records_dst_db = dest_cursor.fetchall()
 
-        if not records_dbone:
+        if not records_src_db:
             return -1  # No more records to process
 
         # Load the records into a pandas dataframe
-        df_dbone = pd.DataFrame(records_dbone, columns=columns)
-        df_dbtwo = pd.DataFrame(records_dbtwo, columns=columns)
+        df_src_db = pd.DataFrame(records_src_db, columns=columns)
+        df_dst_db = pd.DataFrame(records_dst_db, columns=columns)
 
         table_name = extract_table_name(parsed_query)
-        process_new_records(dbtwo_config, df_dbone, df_dbtwo, table_name, columns)
-        process_updated_records(dbtwo_config, df_dbone, df_dbtwo, table_name, columns)
+        process_new_records(dst_db_config, df_src_db, df_dst_db, table_name, columns)
+        process_updated_records(dst_db_config, df_src_db, df_dst_db, table_name, columns)
         
-        return records_dbone[-1][0]
+        return records_src_db[-1][0]
 
     except (Exception, psycopg2.DatabaseError) as error:
         print(f"Error: {error}")
@@ -326,10 +326,8 @@ def track_iterations(max_iterations):
 
     iterations += 1
     if iterations >= max_iterations:
-        print(f"job has now run {iterations} times and is shutting down")
+        print(f"job has now run {iterations} times, max_iteration is {max_iterations} and is shutting down")
         sched.shutdown(wait=False)
-        raise sys.exit()
-
 
 def scheduled_job():
     print("Migration job running")
