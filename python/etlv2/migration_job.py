@@ -1,10 +1,14 @@
 from dotenv import load_dotenv
-from apscheduler.schedulers.blocking import BlockingScheduler
+from typing import List, Tuple, Any
+# from apscheduler.schedulers.blocking import BlockingScheduler
 import os
 import psycopg2
-import pandas as pd
-import re
-from decimal import Decimal
+from psycopg2 import sql
+import logging
+# import pandas as pd
+# import re
+# from decimal import Decimal
+import collections
 import sys
 import configparser
 
@@ -23,7 +27,11 @@ dest_db_user = os.environ.get("DEST_DB_USER")
 dest_db_password = os.environ.get("DEST_DB_PASSWORD")
 
 # Database connection details for dbone
+<<<<<<< Updated upstream
 src_db_config = {
+=======
+src_db_info = {
+>>>>>>> Stashed changes
     "host": src_db_host,
     "port": src_db_port,
     "dbname": src_db_name,
@@ -32,7 +40,11 @@ src_db_config = {
 }
 
 # Database connection details for dbtwo
+<<<<<<< Updated upstream
 dst_db_config = {
+=======
+dst_db_info = {
+>>>>>>> Stashed changes
     "host": dest_db_host,
     "port": dest_db_port,
     "dbname": dest_db_name,
@@ -40,318 +52,119 @@ dst_db_config = {
     "password": dest_db_password
 }
 
-sched = BlockingScheduler()
-iterations = 0
+def fetch_table_schema(src_db_conn, table_name) -> List[Tuple[str, str]]: # returns a list of (column_name, type) tuples
+    with src_db_conn.cursor() as cursor:
+        cursor.execute(sql.SQL("""
+            SELECT 
+                c.column_name, 
+                c.data_type,
+                CASE 
+                    WHEN c.data_type = 'USER-DEFINED' THEN 
+                        (SELECT t.typname FROM pg_catalog.pg_type t WHERE t.oid = a.atttypid)
+                    ELSE c.data_type 
+                END as actual_data_type
+            FROM 
+                information_schema.columns c
+                JOIN pg_catalog.pg_class r ON r.relname = c.table_name
+                JOIN pg_catalog.pg_attribute a ON a.attrelid = r.oid AND a.attname = c.column_name
+            WHERE 
+                c.table_name = %s
+            ORDER BY c.ordinal_position;
+        """), [table_name])
+        # cursor.execute(sql.SQL("SELECT column_name, data_type FROM information_schema.columns WHERE table_name = %s"), [table_name])
+        table_schema = [(row[0], row[1]) for row in cursor.fetchall()]
+    print(table_schema)
+    return table_schema
 
-#function to read properties file as a json object
-def read_properties_file(file_path):
-    config = configparser.ConfigParser(inline_comment_prefixes=('#'), interpolation=None)
-    config.read(file_path)
+def fetch_user_defined_types(src_db_conn):
+    with src_db_conn.cursor() as cursor:
+        cursor.execute("""
+            SELECT pg_type.typname, pg_enum.enumlabel FROM pg_type JOIN pg_enum ON pg_enum.enumtypid = pg_type.oid;
+            """)
+        types = cursor.fetchall()
+    user_defined_types = collections.defaultdict(list)
+    for type_name, enum_label in types:
+        user_defined_types[type_name].append(enum_label)
 
-    return config
+    return user_defined_types
 
-print("Loading properties...")
-# load properties
-loaded_properties = read_properties_file("config.properties")
+def create_user_defined_types(dest_db_conn, user_defined_types):
+    with dest_db_conn.cursor() as cursor:
+        for type_name, enum_labels in user_defined_types.items():
+            enum_labels = list(set(enum_labels))
+            # print(type_name, enum_labels)
+            check_type_query = sql.SQL("SELECT 1 FROM pg_type WHERE typname = %s;")
+            cursor.execute(check_type_query, (type_name,))
+            if not cursor.fetchone():
+                create_type_query = sql.SQL("""
+                    CREATE TYPE {} AS ENUM ({});
+                """).format(
+                    sql.Identifier(type_name), 
+                    sql.SQL(', ').join(sql.Literal(label) for label in enum_labels)
+                )
+                cursor.execute(create_type_query)
 
-def escape_str(value):
-    return value.replace("'", "''")
+    dest_db_conn.commit()
 
-def generate_insert_queries(df, table_name):
-    try:
-        # Initialize the query
-        query = f"INSERT INTO {table_name} ("
+def fetch_table_data(conn, table_name: str, batch_size = 10 ** 6) -> Tuple[List[tuple[Any, ...]], List[str]]:
+    logger.info(f"Reading from the {table_name} table from the source db")
+    data = []
+    with conn.cursor() as cursor:
+        cursor.execute(sql.SQL("SELECT * FROM {} LIMIT 2").format(sql.Identifier(table_name)))
+        col_names = [desc[0] for desc in cursor.description]
+        while True:
+            fetched_data = cursor.fetchmany(batch_size)
+            if not fetched_data:
+                break
+            else:
+                data.append(fetched_data)
+    return data, col_names
 
-        # Get the column names
-        columns = df.columns.tolist()
+def create_table(dst_db_conn, table_name, table_schema) -> None:
+    with dst_db_conn.cursor() as cursor:
+        create_query = f"CREATE TABLE IF NOT EXISTS {table_name} ("
+        n = len(table_schema)
+        for i in range(n):
+            col_name, t = table_schema[i]
+            if i != n - 1:
+                create_query += f"{col_name} {t}, "
+            else:
+                create_query += f"{col_name} {t}"
+        create_query += ");"
+        cursor.execute(create_query)
+        dst_db_conn.commit()
 
-        # Add column names to the query
-        query += ", ".join(columns) + ") VALUES ("
+def insert_table_data(conn, table_name, col_names, data) -> None:
+    with conn.cursor() as cur:
+        insert_query = sql.SQL("INSERT INTO {} VALUES ({})").format(
+            sql.SQL(table_name),
+            sql.SQL(', ').join(sql.Placeholder() for _ in col_names)
+        )
+        print(table_name)
+        print(col_names)
+        cur.executemany(insert_query, data[0])
+    conn.commit()
 
-        # Iterate over each row in the dataframe
-        for index, row in df.iterrows():
-            values = []
-            for col in columns:
-                value = row[col]
-                if isinstance(value, (int, float, Decimal)):
-                    # If value is an integer or float, add it without quotes
-                    values.append(f"NULL" if pd.isnull(value) else str(value))
-                else:
-                    # Otherwise, add it with quotes
-                    values.append(f"NULL" if pd.isnull(value) else (f"'{value}'" if isinstance(value, pd.Timestamp) else f"'{escape_str(value)}'"))
-
-            query += ", ".join(values) + "), ("
-
-        # Remove the trailing ", (" and add a semicolon at the end
-        query = query[:-3] + ";"
-
-    except (Exception) as error:
-        print(f"Error generating insert query: {error}")
-
-    return query
-
-def generate_update_queries(df, table_name, identifier_column="id"):
-    try:
-        query_prefix = f"UPDATE {table_name} SET "
-
-        # Get the column names
-        columns = df.columns.tolistupdate_queries()
-        update_queries = [] 
-
-        # Iterate over each row in the dataframe
-        for index, row in df.iterrows():
-            identifier_value = row[identifier_column]
-            updates = []
-            for col in columns:
-                if (col == identifier_column):
-                    continue
-                value = row[col]
-                if isinstance(value, (int, float, Decimal)):
-                    # If value is an integer or float, add it without quotes
-                    value = f"NULL" if pd.isnull(value) else str(value)
-                    updates.append(f"{col} = {value}")
-                else:
-                    # Otherwise, add it with quotes
-                    value = f"NULL" if pd.isnull(value) else (f"'{value}'" if isinstance(value, pd.Timestamp) else f"'{escape_str(value)}'")
-                    updates.append(f"{col} = {value}")
-
-            query = query_prefix + ", ".join(updates) + " WHERE " + f"{identifier_column} = {identifier_value};"
-            update_queries.append(query)
-
-    except (Exception) as error:
-        print(f"Error generating update query: {error}")
-
-    return update_queries
-
-def extract_table_name(query):
-    # Regular expression pattern to match the table name
-    pattern = r"from\s+(\w+)(?:\s*,|\s+where|$)"
-
-    # Search for the pattern in the query
-    match = re.search(pattern, query, re.IGNORECASE)
-    if match:
-        return match.group(1)
-    else:
-        return None
-    
-def process_new_records(db_config, df_src_db, df_dst_db, table_name, columns):
-    # Compare the DataFrames to find new records.
-    # Merge the two DataFrames with an indicator flag
-    merged_df = df_src_db.merge(df_dst_db, on='id', suffixes=("_df1", "_df2"), how='left', indicator=True)
-    
-    # Filter out the rows that are only in dataframe1
-    new_records = merged_df[merged_df['_merge'] == 'left_only']
-    
-    if not new_records.empty:
-        new_records.drop(columns=['_merge'], inplace=True)
-
-        # Keep only the columns from dataframe1
-        new_records = new_records[[col + '_df1' if col != 'id' else col for col in columns]]
-        # Rename the columns to remove the suffix
-        new_records.columns = columns
-
-        # generate insert queries
-        insert_queries = generate_insert_queries(new_records, table_name) 
-         
-        # Insert new records
-        try:
-            with psycopg2.connect(**db_config) as conn:
-                with conn.cursor() as cur:
-                    # Execute each insert query
-                    # for query in insert_queries:
-                    print("DEBUG INSERT QUERY:", insert_queries)
-                    cur.execute(insert_queries)
-                    conn.commit()  # Commit the transaction
-
-        except (Exception, psycopg2.DatabaseError) as error:
-            print(f"Error inserting new records: {error}")
-
-def process_updated_records(db_config, df_dbone, df_dbtwo, table_name, columns):
-    # Merge both DataFrames on 'id'
-    merged_df = df_dbone.merge(df_dbtwo, on="id", suffixes=("_df1", "_df2"), indicator=True)
-
-    # Initialize the mask to False for all rows
-    mask = pd.Series([False] * len(merged_df))
-
-    # Update the mask for each column (excluding 'id')
-    for col in columns:
-        if col != 'id':
-            # Use the pandas isnull() function to handle None/NaN comparisons
-            mask |= ((merged_df[f'{col}_df1'] != merged_df[f'{col}_df2']) &
-                 ~(pd.isnull(merged_df[f'{col}_df1']) & pd.isnull(merged_df[f'{col}_df2'])))
-
-    # Apply the mask to filter the merged DataFrame
-    updated_records = merged_df[mask]
-    if not updated_records.empty:
-        updated_records.drop(columns=['_merge'], inplace=True)
-        
-        # Keep only the columns from dataframe1
-        updated_records = updated_records[[col + '_df1' if col != 'id' else col for col in columns]]
-        # Rename the columns to remove the suffix
-        updated_records.columns = columns
-
-        # generate update queries
-        update_queries = generate_update_queries(updated_records, table_name)
-
-        # Update modified records
-        try:
-            with psycopg2.connect(**db_config) as conn:
-                with conn.cursor() as cur:
-                    # Execute each insert query
-                    for query in update_queries:
-                        print("DEBUG UPDATE QUERY:", query)
-                        cur.execute(query)
-                        conn.commit()  # Commit the transaction
-
-        except (Exception, psycopg2.DatabaseError) as error:
-            print(f"Error updating existing records: {error}")
-
-def process_data(parsed_query, columns):
-    try:
-        # Fetch a batch of records from dbone
-        with psycopg2.connect(**src_db_config) as src_conn:
-            with src_conn.cursor() as src_cursor:
-                src_cursor.execute(parsed_query)
-                records_src_db = src_cursor.fetchall()
-
-        with psycopg2.connect(**dst_db_config) as dest_conn:
-            with dest_conn.cursor() as dest_cursor:
-                dest_cursor.execute(parsed_query)
-                records_dst_db = dest_cursor.fetchall()
-
-        # print("DEBUG, source_record:", records_src_db)
-        # print("DEBUG, dest_record:", records_dst_db)
-        if not records_src_db:
-            return -1  # No more records to process
-
-        # Load the records into a pandas dataframe
-        df_src_db = pd.DataFrame(records_src_db, columns=columns)
-        df_dst_db = pd.DataFrame(records_dst_db, columns=columns)
-
-        table_name = extract_table_name(parsed_query)
-        process_new_records(dst_db_config, df_src_db, df_dst_db, table_name, columns)
-        process_updated_records(dst_db_config, df_src_db, df_dst_db, table_name, columns)
-        
-        return records_src_db[-1][0]
-
-    except (Exception, psycopg2.DatabaseError) as error:
-        print(f"Error: {error}")
-
-def process_organizations(loaded_properties, batch_size):
-    print("Processing organizations")
-    # comma-separated organization IDs
-    organization_ids = loaded_properties["job"]["organization_ids"]
-
-    # Split the comma-separated IDs into a list
-    organization_ids_list = ",".join(organization_ids.split(","))
-
-    # Organization List SQL query
-    organization_query = loaded_properties["queries"]["organization_query"]
-    columns_str = re.sub(r'\s+', '', loaded_properties["columns"]["organization_columns"])
-    # Remove the table name and keep only the column names
-    columns_arr = [col.split(".")[1] for col in columns_str.split(",")]
-    
-    last_processed_id = 0
-    while last_processed_id > -1:
-        parsed_query = organization_query % (last_processed_id, organization_ids_list, batch_size)
-        # Replace the placeholder with the new string
-        parsed_query = parsed_query.replace("[columns]", columns_str)
-        print("DEBUG organization query:", parsed_query, "LAST PROCESSED ID: ", last_processed_id)
-        # Process data & update the last processed ID
-        last_processed_id = process_data(parsed_query, columns_arr)
-        if last_processed_id is None:
-            print("entity: something went wrong so I could not get last processed record")
-            break
-        # print(f"process organization iteration ended with last processed id: {last_processed_id}")
-            
-    print(f"process organization iterations done")
-
-
-def process_planters(loaded_properties, batch_size):
-    print("Processing planters")
-    # comma-separated organization IDs
-    organization_ids = loaded_properties["job"]["organization_ids"]
-    # Split the comma-separated IDs into a list
-    organization_ids_list = ",".join(organization_ids.split(","))
-
-    # Planter List SQL query
-    planter_query = loaded_properties["queries"]["planter_query"]
-    columns_str = re.sub(r'\s+', '', loaded_properties["columns"]["planter_columns"])
-    # Remove the table name and keep only the column names
-    columns_arr = [col.split(".")[1] for col in columns_str.split(",")]
-
-    last_processed_id = 0
-    while last_processed_id > -1:
-        parsed_query = planter_query % (last_processed_id, organization_ids_list, batch_size)
-        # Replace the placeholder with the new string
-        parsed_query = parsed_query.replace("[columns]", columns_str)
-        print("DEBUG planter query:", parsed_query, "LAST PROCESSED ID: ", last_processed_id)
-        # Process data & update the last processed ID
-        last_processed_id = process_data(parsed_query, columns_arr)
-        if last_processed_id is None:
-            print("planter: something went wrong so I could not get last processed record")
-            break
-        print(f"process planter iteration ended with last processed id: {last_processed_id}")
-            
-    print(f"process planter iterations done")  
-
-def process_trees(loaded_properties, batch_size):
-    print("Processing trees")
-    # comma-separated organization IDs
-    organization_ids = loaded_properties["job"]["organization_ids"]
-    # Split the comma-separated IDs into a list
-    organization_ids_list = ",".join(organization_ids.split(","))
-
-    # Planter List SQL query
-    tree_query = loaded_properties["queries"]["tree_query"]
-    columns_str = re.sub(r'\s+', '', loaded_properties["columns"]["tree_columns"])
-    # Remove the table name and keep only the column names
-    columns_arr = [col.split(".")[1] for col in columns_str.split(",")]
-
-
-    last_processed_id = 0
-    while last_processed_id > -1:
-        parsed_query = tree_query % (last_processed_id, organization_ids_list, batch_size)
-        # Replace the placeholder with the new string
-        parsed_query = parsed_query.replace("[columns]", columns_str)
-        print("DEBUG tree query:", parsed_query, "LAST PROCESSED ID: ", last_processed_id)
-        # Process data & update the last processed ID
-        last_processed_id = process_data(parsed_query, columns_arr)
-        if last_processed_id is None:
-            print("tree: something went wrong so I could not get last processed record")
-            break
-
-        print(f"process tree iteration ended with last processed id: {last_processed_id}")
-            
-    print(f"process tree iterations done")
-
-def track_iterations(max_iterations):
-    global iterations
-
-    iterations += 1
-    if iterations >= max_iterations:
-        print(f"job has now run {iterations} times, max_iteration is {max_iterations} and is shutting down")
-        sched.shutdown(wait=False)
-
-def scheduled_job():
-    print("Migration job running")
-    
-    batch_size = loaded_properties["job"]["query_batch_size"]
-    max_iterations = int(loaded_properties["job"]["max_iterations"])
-
-    process_organizations(loaded_properties, batch_size)
-    process_planters(loaded_properties, batch_size)
-    process_trees(loaded_properties, batch_size)
-    if max_iterations > 0:
-        track_iterations(max_iterations)
-    
+# def migrate_table(source_conn, dest_conn, table_name) -> None:
+#     data, colnames = fetch_table_data(source_conn, table_name)
+#     create_table(dest_conn, table_name, colnames)
+#     insert_table_data(dest_conn, table_name, colnames, data)
 
 if __name__ == "__main__":
-    print("Starting scheduler...")
+    logger = logging.getLogger(__name__)
+    logging.basicConfig(level=logging.INFO, stream=sys.stdout)
+    logger.info("Starting the data migration job")
+    src_conn = psycopg2.connect(**src_db_info)
+    dest_conn = psycopg2.connect(**dst_db_info)
     try:
-        sched.add_job(scheduled_job, "interval", max_instances=10, seconds=int(loaded_properties["job"]["job_interval_seconds"]))
-        sched.start()
-        # scheduled_job()
-    except Exception as e:
-        print(f"Error: {e}")
-        raise SystemExit("Exiting due to the error above")
+        # user_defined_types = fetch_user_defined_types(src_conn)
+        # create_user_defined_types(dest_conn, user_defined_types)
+        for table_name in ['entity', 'planter', 'trees']:
+            data_tuples, col_names = fetch_table_data(src_conn, table_name)
+            table_schema = fetch_table_schema(src_conn, table_name)
+            # create_table(dest_conn, table_name, table_schema) # create table in the dest db
+            col_names = [elem[0] for elem in table_schema]
+            insert_table_data(dest_conn, table_name, col_names, data_tuples)
+    finally:
+        src_conn.close()
+        dest_conn.close()
