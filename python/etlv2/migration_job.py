@@ -134,10 +134,10 @@ def extract_table_name(query):
     else:
         return None
     
-def process_new_records(db_config, df_dbone, df_dbtwo, table_name, columns):
+def process_new_records(db_config, df_src_db, df_dst_db, table_name, columns):
     # Compare the DataFrames to find new records.
     # Merge the two DataFrames with an indicator flag
-    merged_df = df_dbone.merge(df_dbtwo, on='id', suffixes=("_df1", "_df2"), how='left', indicator=True)
+    merged_df = df_src_db.merge(df_dst_db, on='id', suffixes=("_df1", "_df2"), how='left', indicator=True)
     
     # Filter out the rows that are only in dataframe1
     new_records = merged_df[merged_df['_merge'] == 'left_only']
@@ -159,6 +159,7 @@ def process_new_records(db_config, df_dbone, df_dbtwo, table_name, columns):
                 with conn.cursor() as cur:
                     # Execute each insert query
                     # for query in insert_queries:
+                    print("DEBUG INSERT QUERY:", insert_queries)
                     cur.execute(insert_queries)
                     conn.commit()  # Commit the transaction
 
@@ -198,6 +199,7 @@ def process_updated_records(db_config, df_dbone, df_dbtwo, table_name, columns):
                 with conn.cursor() as cur:
                     # Execute each insert query
                     for query in update_queries:
+                        print("DEBUG UPDATE QUERY:", query)
                         cur.execute(query)
                         conn.commit()  # Commit the transaction
 
@@ -217,6 +219,8 @@ def process_data(parsed_query, columns):
                 dest_cursor.execute(parsed_query)
                 records_dst_db = dest_cursor.fetchall()
 
+        # print("DEBUG, source_record:", records_src_db)
+        # print("DEBUG, dest_record:", records_dst_db)
         if not records_src_db:
             return -1  # No more records to process
 
@@ -252,13 +256,13 @@ def process_organizations(loaded_properties, batch_size):
         parsed_query = organization_query % (last_processed_id, organization_ids_list, batch_size)
         # Replace the placeholder with the new string
         parsed_query = parsed_query.replace("[columns]", columns_str)
-    
+        print("DEBUG organization query:", parsed_query, "LAST PROCESSED ID: ", last_processed_id)
         # Process data & update the last processed ID
         last_processed_id = process_data(parsed_query, columns_arr)
         if last_processed_id is None:
             print("entity: something went wrong so I could not get last processed record")
             break
-        print(f"process organization iteration ended with last processed id: {last_processed_id}")
+        # print(f"process organization iteration ended with last processed id: {last_processed_id}")
             
     print(f"process organization iterations done")
 
@@ -281,7 +285,7 @@ def process_planters(loaded_properties, batch_size):
         parsed_query = planter_query % (last_processed_id, organization_ids_list, batch_size)
         # Replace the placeholder with the new string
         parsed_query = parsed_query.replace("[columns]", columns_str)
-
+        print("DEBUG planter query:", parsed_query, "LAST PROCESSED ID: ", last_processed_id)
         # Process data & update the last processed ID
         last_processed_id = process_data(parsed_query, columns_arr)
         if last_processed_id is None:
@@ -310,7 +314,7 @@ def process_trees(loaded_properties, batch_size):
         parsed_query = tree_query % (last_processed_id, organization_ids_list, batch_size)
         # Replace the placeholder with the new string
         parsed_query = parsed_query.replace("[columns]", columns_str)
-
+        print("DEBUG tree query:", parsed_query, "LAST PROCESSED ID: ", last_processed_id)
         # Process data & update the last processed ID
         last_processed_id = process_data(parsed_query, columns_arr)
         if last_processed_id is None:
@@ -344,10 +348,10 @@ def scheduled_job():
 
 if __name__ == "__main__":
     print("Starting scheduler...")
-
     try:
-        sched.add_job(scheduled_job, "interval", max_instances=1, seconds=int(loaded_properties["job"]["job_interval_seconds"]))
+        sched.add_job(scheduled_job, "interval", max_instances=10, seconds=int(loaded_properties["job"]["job_interval_seconds"]))
         sched.start()
+        # scheduled_job()
     except Exception as e:
         print(f"Error: {e}")
         raise SystemExit("Exiting due to the error above")
