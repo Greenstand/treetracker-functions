@@ -6,10 +6,6 @@ import psycopg2
 from psycopg2 import sql
 import sys
 from typing import List, Tuple, Any
-# import pandas as pd
-# import re
-# from decimal import Decimal
-# from apscheduler.schedulers.blocking import BlockingScheduler
 
 load_dotenv(override=True)
 
@@ -111,7 +107,6 @@ def register_all_udts(source_conn, dest_conn):
 
     # Register the UDTs in the destination database
     for type_name, schema_name, enum_labels in udt_info:
-        # full_type_name = f"{schema_name}.{type_name}"
         full_type_name = f"{type_name}"
         enum_lst = ', '.join([f"'{label}'" for label in enum_labels])
         
@@ -160,14 +155,6 @@ def fetch_and_transform(conn, table_name: str, src_table_columns: List[str], des
                             transformed_data.append(None)
                             j += 1
                     res_data.append(tuple(transformed_data))
-                    # for col_val, col_name in zip(data, request_columns): # for every column of that row
-                    #     if col_name == "sequence":
-                    #         print("reached")
-                    #     if col_name not in dest_table_columns:
-                    #         transformed_data.append("NULL")
-                    #     else:
-                    #         transformed_data.append(col_val)
-                    # res_data.append(tuple(transformed_data))
     return res_data
 
 def fetch_table_columns(conn, table_name: str) -> List[str]:
@@ -225,18 +212,14 @@ if __name__ == "__main__":
 
     entity_ids = []
     try:
-        # user_defined_types = fetch_user_defined_types(src_conn)
+        # the following is needed if we need to create user defined types that isn't present the the dest database
+        # user_defined_types = fetch_user_defined_types(src_conn) 
         # create_user_defined_types(dest_conn, user_defined_types)
         for table_name in ['entity', 'planter', 'trees']:
             src_table_columns = fetch_table_columns(src_conn, table_name) 
             dest_table_columns = fetch_table_columns(dest_conn, table_name)
             transformed_tuples = fetch_and_transform(src_conn, table_name, src_table_columns, dest_table_columns)
-            # print(table_name, len(dest_table_columns), len(transformed_tuples[0]))
             insert_table_data(dest_conn, table_name, dest_table_columns, transformed_tuples)
-            # table_schema = fetch_table_schema(dest_conn, table_name)
-            # new_table_name = table_name + "_new"
-            # create_table(dest_conn, new_table_name, table_schema) # create table in the dest db
-            # col_names = [elem[0] for elem in table_schema]
     finally:
         src_conn.close()
         dest_conn.close()
