@@ -1,16 +1,15 @@
+import collections
 from dotenv import load_dotenv
-from typing import List, Tuple, Any
-# from apscheduler.schedulers.blocking import BlockingScheduler
+import logging
 import os
 import psycopg2
 from psycopg2 import sql
-import logging
+import sys
+from typing import List, Tuple, Any
 # import pandas as pd
 # import re
 # from decimal import Decimal
-import collections
-import sys
-import configparser
+# from apscheduler.schedulers.blocking import BlockingScheduler
 
 load_dotenv(override=True)
 
@@ -27,11 +26,8 @@ dest_db_user = os.environ.get("DEST_DB_USER")
 dest_db_password = os.environ.get("DEST_DB_PASSWORD")
 
 # Database connection details for dbone
-<<<<<<< Updated upstream
-src_db_config = {
-=======
+
 src_db_info = {
->>>>>>> Stashed changes
     "host": src_db_host,
     "port": src_db_port,
     "dbname": src_db_name,
@@ -40,11 +36,8 @@ src_db_info = {
 }
 
 # Database connection details for dbtwo
-<<<<<<< Updated upstream
-dst_db_config = {
-=======
+
 dst_db_info = {
->>>>>>> Stashed changes
     "host": dest_db_host,
     "port": dest_db_port,
     "dbname": dest_db_name,
@@ -72,8 +65,7 @@ def fetch_table_schema(src_db_conn, table_name) -> List[Tuple[str, str]]: # retu
             ORDER BY c.ordinal_position;
         """), [table_name])
         # cursor.execute(sql.SQL("SELECT column_name, data_type FROM information_schema.columns WHERE table_name = %s"), [table_name])
-        table_schema = [(row[0], row[1]) for row in cursor.fetchall()]
-    print(table_schema)
+        table_schema = [(row[0], row[2]) for row in cursor.fetchall()]
     return table_schema
 
 def fetch_user_defined_types(src_db_conn):
@@ -88,37 +80,117 @@ def fetch_user_defined_types(src_db_conn):
 
     return user_defined_types
 
-def create_user_defined_types(dest_db_conn, user_defined_types):
-    with dest_db_conn.cursor() as cursor:
-        for type_name, enum_labels in user_defined_types.items():
-            enum_labels = list(set(enum_labels))
-            # print(type_name, enum_labels)
-            check_type_query = sql.SQL("SELECT 1 FROM pg_type WHERE typname = %s;")
-            cursor.execute(check_type_query, (type_name,))
-            if not cursor.fetchone():
-                create_type_query = sql.SQL("""
-                    CREATE TYPE {} AS ENUM ({});
-                """).format(
-                    sql.Identifier(type_name), 
-                    sql.SQL(', ').join(sql.Literal(label) for label in enum_labels)
-                )
-                cursor.execute(create_type_query)
 
-    dest_db_conn.commit()
+def register_all_udts(source_conn, dest_conn):
+    query = """
+    SELECT t.typname AS type_name, 
+           n.nspname AS schema_name,
+           array_agg(e.enumlabel ORDER BY e.enumsortorder) AS enum_labels
+    FROM pg_type t
+    JOIN pg_namespace n ON n.oid = t.typnamespace
+    JOIN pg_enum e ON t.oid = e.enumtypid
+    GROUP BY t.typname, n.nspname;
+    """
 
-def fetch_table_data(conn, table_name: str, batch_size = 10 ** 6) -> Tuple[List[tuple[Any, ...]], List[str]]:
-    logger.info(f"Reading from the {table_name} table from the source db")
-    data = []
+    cursor = source_conn.cursor()
+    cursor.execute(query)
+    udt_info = cursor.fetchall()
+
+    for type_name, schema_name, enum_labels in udt_info:
+        full_type_name = f"{schema_name}.{type_name}"
+        
+        psycopg2.extensions.register_type(
+            psycopg2.extensions.new_type(
+                (source_conn.get_dsn_parameters()['dbname'] + '.' + full_type_name,),
+                full_type_name,
+                lambda value, cursor: value
+            )
+        )
+    
+    cursor.close()
+
+    # Register the UDTs in the destination database
+    for type_name, schema_name, enum_labels in udt_info:
+        # full_type_name = f"{schema_name}.{type_name}"
+        full_type_name = f"{type_name}"
+        enum_lst = ', '.join([f"'{label}'" for label in enum_labels])
+        
+        create_enum_type_query = f"CREATE TYPE {full_type_name} AS ENUM ({enum_lst});"
+        udt_query = f"""
+                    DO $$
+                    BEGIN
+                        IF NOT EXISTS (SELECT 1 FROM pg_type WHERE typname = '{type_name}') THEN
+                        {create_enum_type_query}
+                        END IF;
+                    END$$;
+                    """
+        dest_cursor = dest_conn.cursor()
+        dest_cursor.execute(udt_query)
+    dest_cursor.close()
+
+# only fetch columns that are present in the source table
+# transform the data fetched 
+def fetch_and_transform(conn, table_name: str, src_table_columns: List[str], dest_table_columns: List[str], batch_size = 10 ** 6) -> List[tuple[Any, ...]]:
+    """
+        Only fetch columns that are present in BOTH the source table and the dest table
+        For columns that only exists in the dest table but not in the source table, 
+        we transform the data fetched from the source table to fit the dest table's schema by appending NULL values.
+    """
+    res_data = []
+    request_columns = [col for col in dest_table_columns if col in src_table_columns] # all columns that exist both in the src table and dest table
     with conn.cursor() as cursor:
-        cursor.execute(sql.SQL("SELECT * FROM {} LIMIT 2").format(sql.Identifier(table_name)))
-        col_names = [desc[0] for desc in cursor.description]
+        request_columns_str = ", ".join(request_columns) if request_columns else "*"
+        query = f"SELECT {request_columns_str} FROM {table_name};"
+        cursor.execute(query)
         while True:
             fetched_data = cursor.fetchmany(batch_size)
             if not fetched_data:
                 break
             else:
-                data.append(fetched_data)
-    return data, col_names
+                for data in fetched_data: # iterate over every row
+                    transformed_data = []
+                    i = j = 0
+                    m, n = len(request_columns), len(dest_table_columns)
+                    while i < m and j < n: # for every column of that row
+                        if request_columns[i] == dest_table_columns[j]:
+                            transformed_data.append(data[i])
+                            i += 1
+                            j += 1
+                        else:
+                            transformed_data.append(None)
+                            j += 1
+                    res_data.append(tuple(transformed_data))
+                    # for col_val, col_name in zip(data, request_columns): # for every column of that row
+                    #     if col_name == "sequence":
+                    #         print("reached")
+                    #     if col_name not in dest_table_columns:
+                    #         transformed_data.append("NULL")
+                    #     else:
+                    #         transformed_data.append(col_val)
+                    # res_data.append(tuple(transformed_data))
+    return res_data
+
+def fetch_table_columns(conn, table_name: str) -> List[str]:
+    with conn.cursor() as cursor:
+        cursor.execute(sql.SQL("""
+            SELECT 
+                c.column_name, 
+                c.data_type,
+                CASE 
+                    WHEN c.data_type = 'USER-DEFINED' THEN 
+                        (SELECT t.typname FROM pg_catalog.pg_type t WHERE t.oid = a.atttypid)
+                    ELSE c.data_type 
+                END as actual_data_type
+            FROM 
+                information_schema.columns c
+                JOIN pg_catalog.pg_class r ON r.relname = c.table_name
+                JOIN pg_catalog.pg_attribute a ON a.attrelid = r.oid AND a.attname = c.column_name
+            WHERE 
+                c.table_name = %s
+            ORDER BY c.ordinal_position;
+        """), [table_name])
+        table_cols = [row[0] for row in cursor.fetchall()]
+    return table_cols
 
 def create_table(dst_db_conn, table_name, table_schema) -> None:
     with dst_db_conn.cursor() as cursor:
@@ -136,35 +208,35 @@ def create_table(dst_db_conn, table_name, table_schema) -> None:
 
 def insert_table_data(conn, table_name, col_names, data) -> None:
     with conn.cursor() as cur:
-        insert_query = sql.SQL("INSERT INTO {} VALUES ({})").format(
-            sql.SQL(table_name),
-            sql.SQL(', ').join(sql.Placeholder() for _ in col_names)
-        )
-        print(table_name)
-        print(col_names)
-        cur.executemany(insert_query, data[0])
-    conn.commit()
-
-# def migrate_table(source_conn, dest_conn, table_name) -> None:
-#     data, colnames = fetch_table_data(source_conn, table_name)
-#     create_table(dest_conn, table_name, colnames)
-#     insert_table_data(dest_conn, table_name, colnames, data)
-
+        cols = ", ".join(col_names)
+        placeholders = ", ".join(["%s"] * len(col_names))
+        for d in data:
+            insert_query = f"INSERT INTO {table_name} ({cols}) VALUES ({placeholders}) ON CONFLICT DO NOTHING;"
+            cur.execute(insert_query, d)
+        conn.commit()
+    
 if __name__ == "__main__":
     logger = logging.getLogger(__name__)
     logging.basicConfig(level=logging.INFO, stream=sys.stdout)
     logger.info("Starting the data migration job")
     src_conn = psycopg2.connect(**src_db_info)
     dest_conn = psycopg2.connect(**dst_db_info)
+    register_all_udts(src_conn, dest_conn)
+
+    entity_ids = []
     try:
         # user_defined_types = fetch_user_defined_types(src_conn)
         # create_user_defined_types(dest_conn, user_defined_types)
         for table_name in ['entity', 'planter', 'trees']:
-            data_tuples, col_names = fetch_table_data(src_conn, table_name)
-            table_schema = fetch_table_schema(src_conn, table_name)
-            # create_table(dest_conn, table_name, table_schema) # create table in the dest db
-            col_names = [elem[0] for elem in table_schema]
-            insert_table_data(dest_conn, table_name, col_names, data_tuples)
+            src_table_columns = fetch_table_columns(src_conn, table_name) 
+            dest_table_columns = fetch_table_columns(dest_conn, table_name)
+            transformed_tuples = fetch_and_transform(src_conn, table_name, src_table_columns, dest_table_columns)
+            # print(table_name, len(dest_table_columns), len(transformed_tuples[0]))
+            insert_table_data(dest_conn, table_name, dest_table_columns, transformed_tuples)
+            # table_schema = fetch_table_schema(dest_conn, table_name)
+            # new_table_name = table_name + "_new"
+            # create_table(dest_conn, new_table_name, table_schema) # create table in the dest db
+            # col_names = [elem[0] for elem in table_schema]
     finally:
         src_conn.close()
         dest_conn.close()
