@@ -13,8 +13,11 @@ Run the following command to create a virtual environment (replace myenv with yo
 
 ## Set up Database Access Credential in .env
 
-Create an .env file in the project directory to configure database login credentials.
-Open the .env file and copy the following key-value configs, update the values accordingly.
+Create an .env file in the project directory to configure your database login credentials.
+
+`touch .env`
+
+Edit the .env file and copy the following key-value configs, update the values according to your actual database access credential.
 
 ```
 SRC_DB_HOST=localhost
