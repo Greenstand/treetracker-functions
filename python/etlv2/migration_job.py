@@ -131,11 +131,18 @@ def fetch_and_transform(conn, table_name: str, src_table_columns: List[str], des
         For columns that only exists in the dest table but not in the source table, 
         we transform the data fetched from the source table to fit the dest table's schema by appending NULL values.
     """
+    assert table_name in TABLES, "you must specify the tables you want to fetch in TABLES"
     res_data = []
     request_columns = [col for col in dest_table_columns if col in src_table_columns] # all columns that exist both in the src table and dest table
     with conn.cursor() as cursor:
         request_columns_str = ", ".join(request_columns) if request_columns else "*"
         query = f"SELECT {request_columns_str} FROM {table_name};"
+        if entity_ids: # use the specified entity id as filter condition
+            query = query[:-1] + " WHERE "
+            filter_column = "id" if table_name == "entity" else "organization_id" if table_name == "planter" else "planter_id"
+            entity_ids_str = ", ".join(map(str, entity_ids))
+            query += f"{filter_column} IN ({entity_ids_str})"
+            print(query)
         cursor.execute(query)
         while True:
             fetched_data = cursor.fetchmany(batch_size)
@@ -210,12 +217,13 @@ if __name__ == "__main__":
     dest_conn = psycopg2.connect(**dst_db_info)
     register_all_udts(src_conn, dest_conn)
 
-    entity_ids = []
+    entity_ids = [1]
+    TABLES = ['entity', 'planter', 'trees']
     try:
         # the following is needed if we need to create user defined types that isn't present the the dest database
         # user_defined_types = fetch_user_defined_types(src_conn) 
         # create_user_defined_types(dest_conn, user_defined_types)
-        for table_name in ['entity', 'planter', 'trees']:
+        for table_name in TABLES:
             src_table_columns = fetch_table_columns(src_conn, table_name) 
             dest_table_columns = fetch_table_columns(dest_conn, table_name)
             transformed_tuples = fetch_and_transform(src_conn, table_name, src_table_columns, dest_table_columns)
