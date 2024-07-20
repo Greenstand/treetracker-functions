@@ -142,7 +142,8 @@ def fetch_and_transform(conn, table_name: str, src_table_columns: List[str], des
             filter_column = "id" if table_name == "entity" else "organization_id" if table_name == "planter" else "planter_id"
             entity_ids_str = ", ".join(map(str, entity_ids))
             query += f"{filter_column} IN ({entity_ids_str})"
-            print(query)
+        else:
+            logger.warn("User did not specify any entity ids, fetching all columns...")
         cursor.execute(query)
         while True:
             fetched_data = cursor.fetchmany(batch_size)
@@ -217,7 +218,7 @@ if __name__ == "__main__":
     dest_conn = psycopg2.connect(**dst_db_info)
     register_all_udts(src_conn, dest_conn)
 
-    entity_ids = [1]
+    entity_ids = []
     TABLES = ['entity', 'planter', 'trees']
     try:
         # the following is needed if we need to create user defined types that isn't present the the dest database
